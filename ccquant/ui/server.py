@@ -2061,49 +2061,288 @@ class BacktestRequest(BaseModel):
     slippage: float = 0.0
     rate: float = 0.0003
     underlying: str = "510050"
+    start_date: str | None = None
+    end_date: str | None = None
+    vt_symbols: list[str] | None = None
     params: dict[str, Any] | None = None
+    # Single-contract CTA mode fields
+    vt_symbol: str | None = None
+    interval: str = "d"
+    size: float = 10000.0
+    pricetick: float = 0.0001
+
+
+class OptimizationRequest(BaseModel):
+    strategy_name: str
+    initial_capital: float = 1_000_000.0
+    slippage: float = 0.0
+    rate: float = 0.0003
+    underlying: str = "510050"
+    start_date: str | None = None
+    end_date: str | None = None
+    vt_symbols: list[str] | None = None
+    target: str = "sharpe_ratio"
+    params: dict[str, Any] | None = None
+    params_range: dict[str, dict[str, float]] = {}
+    mode: Literal["bf", "ga"] = "bf"
+    max_workers: int | None = None
+    ngen: int = 30
+    # Single-contract CTA mode fields
+    vt_symbol: str | None = None
+    interval: str = "d"
+    size: float = 10000.0
+    pricetick: float = 0.0001
+
+
+def _get_ivpredict_bars_and_symbols(
+    strategy_name: str,
+    params: dict[str, Any] | None,
+    start: datetime,
+    end: datetime,
+) -> tuple[dict[str, list[Any]] | None, list[str]]:
+    """If strategy is IvPredict, load full bars_dict from strategy data pipeline."""
+    if not strategy_name.startswith("IvPredict"):
+        return None, []
+
+    from strategy.src.core.data_loader import prepare_backtest_data
+
+    p = params or {}
+    data_dir = p.get("data_dir", "strategy/data")
+    model_path = p.get("model_path", "strategy/data/output/baseline_xgb/model_abs_iv.pkl")
+    data = prepare_backtest_data(data_dir=data_dir, model_path=model_path, use_mw_cache=True)
+    bars_dict = data["bars_dict"]
+
+    # Filter by date range
+    filtered: dict[str, list[Any]] = {}
+    for vt_symbol, bars in bars_dict.items():
+        fb = [b for b in bars if start <= b.datetime <= end]
+        if fb:
+            filtered[vt_symbol] = fb
+
+    vt_symbols = list(filtered.keys())
+    return filtered, vt_symbols
 
 
 @app.post("/api/backtest/run")
 def run_backtest(req: BacktestRequest) -> dict[str, Any]:
     try:
-        from ccquant.backtest.engine import OptionBacktestEngine
+        from ccquant.backtest.engine import BacktestingEngine
+        from ccquant.backtest.template import StrategyTemplate
         from ccquant.strategy.strategies import get_strategy_class
         from ccquant.core.object import BarData
         from ccquant.core.constant import Exchange, Interval
+        import numpy as np
 
-        engine = OptionBacktestEngine()
-        engine.set_parameters(
-            initial_capital=req.initial_capital,
-            slippage=req.slippage,
-            rate=req.rate,
+        def to_json_serializable(obj):
+            """Convert numpy types to Python native types."""
+            if isinstance(obj, dict):
+                return {k: to_json_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [to_json_serializable(v) for v in obj]
+            elif isinstance(obj, (np.floating, np.integer)):
+                return float(obj) if isinstance(obj, np.floating) else int(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            return obj
+
+        # Parse interval
+        interval_map = {"1m": Interval.MINUTE, "1h": Interval.HOUR, "d": Interval.DAILY}
+        interval = interval_map.get(req.interval, Interval.DAILY)
+
+        # Parse dates
+        start = datetime.strptime(req.start_date, "%Y-%m-%d") if req.start_date else datetime(2024, 1, 1)
+        end = datetime.strptime(req.end_date, "%Y-%m-%d") if req.end_date else datetime(2024, 12, 31)
+
+        # IvPredict strategies load their own full universe data
+        iv_bars_dict, iv_symbols = _get_ivpredict_bars_and_symbols(
+            req.strategy_name, req.params, start, end.replace(hour=23, minute=59, second=59)
         )
-        bars_dict: dict[str, list[BarData]] = {}
-        demo_symbols = [("510050C2401M02500", "SSE"), ("510050P2401M02500", "SSE")]
-        for sym, exch in demo_symbols:
-            bars = []
-            price = 0.1
-            for i in range(30):
-                dt = datetime(2024, 1, 1, 9, 30) + pd.Timedelta(days=i)
-                price = max(0.01, price + (0.005 if i % 5 == 0 else -0.002))
-                bar = BarData(
-                    symbol=sym, exchange=Exchange(exch), datetime=dt,
-                    interval=Interval.DAILY,
-                    open_price=price, high_price=price + 0.005,
-                    low_price=price - 0.005, close_price=price,
-                    gateway_name="BACKTEST",
-                )
-                bars.append(bar)
-            bars_dict[f"{sym}.{exch}"] = bars
-        engine.load_data(bars_dict)
+
+        if iv_bars_dict is not None:
+            vt_symbols = iv_symbols
+            rates = {s: req.rate for s in vt_symbols}
+            slippages = {s: req.slippage for s in vt_symbols}
+            sizes = {s: req.size for s in vt_symbols}
+            priceticks = {s: req.pricetick for s in vt_symbols}
+        elif req.vt_symbol:
+            # Single-contract mode (vnpy CTA style)
+            vt_symbols = [req.vt_symbol]
+            rates = {req.vt_symbol: req.rate}
+            slippages = {req.vt_symbol: req.slippage}
+            sizes = {req.vt_symbol: req.size}
+            priceticks = {req.vt_symbol: req.pricetick}
+        else:
+            # Multi-contract mode (existing behavior)
+            vt_symbols = req.vt_symbols or []
+            if not vt_symbols:
+                return {"success": False, "message": "请选择至少一个合约"}
+            rates = {s: req.rate for s in vt_symbols}
+            slippages = {s: req.slippage for s in vt_symbols}
+            sizes = {s: req.size for s in vt_symbols}
+            priceticks = {s: req.pricetick for s in vt_symbols}
+
+        engine = BacktestingEngine()
+        engine.set_parameters(
+            vt_symbols=vt_symbols,
+            interval=interval,
+            start=start,
+            end=end,
+            rates=rates,
+            slippages=slippages,
+            sizes=sizes,
+            priceticks=priceticks,
+            capital=req.initial_capital,
+        )
+
+        # Load data (database or injected bars_dict for IvPredict)
+        if iv_bars_dict is not None:
+            engine.load_data(iv_bars_dict)
+        else:
+            engine.load_data()
+
+        if not engine.history_data:
+            return {"success": False, "message": f"未找到 {vt_symbols} 在 {req.start_date} ~ {req.end_date} 的历史数据，请检查数据是否已导入数据库。"}
+
+        # Load strategy
         strategy_class = get_strategy_class(req.strategy_name)
-        strategy = strategy_class(engine, req.params or {})
-        engine.strategy = strategy
+
+        # Wrap old-style strategy if needed (doesn't accept 4 args)
+        import inspect
+        sig = inspect.signature(strategy_class.__init__)
+        param_count = len(sig.parameters) - 1  # exclude self
+
+        if param_count <= 2:
+            _OldClass = strategy_class
+
+            class WrappedStrategy(StrategyTemplate):
+                author = getattr(_OldClass, "author", "")
+                parameters = []
+                variables = []
+
+                def __init__(self, engine, name, vt_symbols, setting):
+                    super().__init__(engine, name, vt_symbols, setting)
+                    self._inner = _OldClass(engine, setting)
+
+                def on_init(self):
+                    if hasattr(self._inner, "on_init"):
+                        self._inner.on_init()
+
+                def on_bars(self, bars):
+                    if hasattr(self._inner, "on_bars"):
+                        self._inner.on_bars(bars)
+
+            engine.add_strategy(WrappedStrategy, req.params or {})
+        else:
+            engine.add_strategy(strategy_class, req.params or {})
+
         engine.run_backtesting()
-        result = engine.get_result()
-        return {"success": True, "result": result.to_dict()}
+        df = engine.calculate_result()
+        statistics = engine.calculate_statistics(output=False)
+        chart_json = engine.get_chart_json()
+
+        return {
+            "success": True,
+            "statistics": to_json_serializable(statistics),
+            "chart_json": chart_json,
+            "trades": to_json_serializable(engine.get_trades_df()),
+            "orders": to_json_serializable(engine.get_orders_df()),
+            "daily_results": to_json_serializable(engine.get_daily_results_df()),
+            "daily_df": to_json_serializable(engine.get_daily_df_records()),
+            "logs": engine.logs[-200:],
+        }
     except Exception as e:
-        return {"success": False, "message": str(e)}
+        import traceback
+        return {"success": False, "message": str(e), "traceback": traceback.format_exc()}
+
+
+@app.post("/api/backtest/optimize")
+def run_optimization(req: OptimizationRequest) -> dict[str, Any]:
+    try:
+        from ccquant.backtest.engine import BacktestingEngine
+        from ccquant.backtest.optimization import OptimizationSetting
+        from ccquant.strategy.strategies import get_strategy_class
+        from ccquant.core.constant import Interval
+
+        interval_map = {"1m": Interval.MINUTE, "1h": Interval.HOUR, "d": Interval.DAILY}
+        interval = interval_map.get(req.interval, Interval.DAILY)
+
+        start = datetime.strptime(req.start_date, "%Y-%m-%d") if req.start_date else datetime(2024, 1, 1)
+        end = datetime.strptime(req.end_date, "%Y-%m-%d") if req.end_date else datetime(2024, 12, 31)
+
+        iv_bars_dict, iv_symbols = _get_ivpredict_bars_and_symbols(
+            req.strategy_name, req.params, start, end.replace(hour=23, minute=59, second=59)
+        )
+
+        if iv_bars_dict is not None:
+            vt_symbols = iv_symbols
+            rates = {s: req.rate for s in vt_symbols}
+            slippages = {s: req.slippage for s in vt_symbols}
+            sizes = {s: req.size for s in vt_symbols}
+            priceticks = {s: req.pricetick for s in vt_symbols}
+        elif req.vt_symbol:
+            vt_symbols = [req.vt_symbol]
+            rates = {req.vt_symbol: req.rate}
+            slippages = {req.vt_symbol: req.slippage}
+            sizes = {req.vt_symbol: req.size}
+            priceticks = {req.vt_symbol: req.pricetick}
+        else:
+            vt_symbols = req.vt_symbols or []
+            if not vt_symbols:
+                return {"success": False, "message": "请选择至少一个合约"}
+            rates = {s: req.rate for s in vt_symbols}
+            slippages = {s: req.slippage for s in vt_symbols}
+            sizes = {s: req.size for s in vt_symbols}
+            priceticks = {s: req.pricetick for s in vt_symbols}
+
+        engine = BacktestingEngine()
+        engine.set_parameters(
+            vt_symbols=vt_symbols,
+            interval=interval,
+            start=start, end=end,
+            rates=rates, slippages=slippages,
+            sizes=sizes, priceticks=priceticks,
+            capital=req.initial_capital,
+        )
+
+        strategy_class = get_strategy_class(req.strategy_name)
+        engine.add_strategy(strategy_class, req.params or {})
+        if iv_bars_dict is not None:
+            engine.load_data(iv_bars_dict)
+        else:
+            engine.load_data()
+
+        # Build optimization setting
+        opt_setting = OptimizationSetting()
+        opt_setting.set_target(req.target)
+        for name, range_dict in req.params_range.items():
+            opt_setting.add_parameter(
+                name,
+                range_dict.get("start", 0),
+                range_dict.get("end"),
+                range_dict.get("step"),
+            )
+
+        if req.mode == "ga":
+            results = engine.run_ga_optimization(
+                opt_setting, max_workers=req.max_workers, ngen=req.ngen, output=False,
+                bars_dict=iv_bars_dict,
+            )
+        else:
+            results = engine.run_bf_optimization(
+                opt_setting, max_workers=req.max_workers, output=False,
+                bars_dict=iv_bars_dict,
+            )
+
+        return {
+            "success": True,
+            "results": [
+                {"params": r[0], "target_value": r[1], "statistics": r[2]}
+                for r in results[:50]
+            ],
+        }
+    except Exception as e:
+        import traceback
+        return {"success": False, "message": str(e), "traceback": traceback.format_exc()}
 
 
 @app.get("/api/backtest/history")

@@ -1,247 +1,290 @@
-import { useEffect, useRef } from 'react';
-import * as echarts from 'echarts';
+import { useEffect, useRef, useState } from 'react';
 import type { BacktestResult } from '../types';
-import { PayoffChart } from './PayoffChart';
-import { GreeksChart } from './GreeksChart';
 
 interface Props {
   result: BacktestResult;
 }
 
-function StatCard({ label, value, prefix = '', suffix = '', type = 'neutral' }: {
+function StatCard({
+  label,
+  value,
+  suffix = '',
+  type = 'neutral',
+}: {
   label: string;
   value: string | number | undefined | null;
-  prefix?: string;
   suffix?: string;
   type?: 'positive' | 'negative' | 'neutral';
 }) {
-  // 确保值是有效字符串
-  const displayValue = value === undefined || value === null || Number.isNaN(value)
-    ? '--'
-    : String(value);
+  const displayValue = value === undefined || value === null || Number.isNaN(value) ? '--' : String(value);
+
+  const colors: Record<string, { bg: string; text: string; border: string }> = {
+    positive: { bg: '#f0fdf4', text: '#22c55e', border: '#dcfce7' },
+    negative: { bg: '#fef2f2', text: '#ef4444', border: '#fee2e2' },
+    neutral: { bg: '#f8f9fa', text: '#64748b', border: '#e2e8f0' },
+  };
+
+  const color = colors[type];
 
   return (
-    <div className="stat-card-compact">
-      <div className={`stat-value-compact ${type}`}>
-        {prefix}{displayValue}{suffix}
+    <div
+      style={{
+        backgroundColor: color.bg,
+        border: `1px solid ${color.border}`,
+        borderRadius: 8,
+        padding: 16,
+        textAlign: 'center',
+        minWidth: 120,
+      }}
+    >
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8, fontWeight: 500 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 'bold', color: color.text }}>
+        {displayValue}
+        {suffix}
       </div>
-      <div className="stat-label-compact">{label}</div>
     </div>
   );
 }
 
 export function BacktestDashboard({ result }: Props) {
-  // 防御性编程：确保 result 不为 null/undefined
   if (!result) {
     return (
-      <div className="dashboard">
-        <div className="dashboard-empty">
-          <p>暂无回测结果数据</p>
-        </div>
+      <div style={{ padding: 24, textAlign: 'center', color: '#64748b' }}>
+        暂无回测结果数据
       </div>
     );
   }
 
-  const { statistics, portfolioHistory, trades, payoff } = result;
-  const mainChartRef = useRef<HTMLDivElement>(null);
-  const mainChartInstance = useRef<echarts.ECharts | null>(null);
-
-  // 主收益曲线
-  useEffect(() => {
-    if (!mainChartRef.current) return;
-    if (!mainChartInstance.current) {
-      mainChartInstance.current = echarts.init(mainChartRef.current);
-    }
-
-    const history = (portfolioHistory || []).filter((h: any) => h && (h.datetime || h.date));
-    const dates = history.map((h: any) => h.datetime?.slice(0, 10));
-    const values = history.map((h: any) => {
-      const cash = h.cash ?? 0;
-      const marketValue = h.totalMarketValue ?? h.total_market_value ?? 0;
-      return cash + marketValue;
-    });
-    const initialValue = values[0] || 1;
-    const returns = values.map((v: number) => ((v - initialValue) / initialValue) * 100);
-
-    const option: echarts.EChartsOption = {
-      backgroundColor: 'transparent',
-      tooltip: {
-        trigger: 'axis',
-        formatter: (params: any) => {
-          const p = params[0];
-          return `${p.name}<br/>累计收益: ${Number(p.value).toFixed(2)}%`;
-        },
-      },
-      grid: { left: '3%', right: '4%', bottom: '3%', top: '10%', containLabel: true },
-      xAxis: {
-        type: 'category',
-        data: dates,
-        boundaryGap: false,
-        axisLine: { show: false },
-        axisTick: { show: false },
-        axisLabel: { color: '#5f6368', fontSize: 11 },
-      },
-      yAxis: {
-        type: 'value',
-        axisLine: { show: false },
-        axisTick: { show: false },
-        axisLabel: {
-          color: '#5f6368',
-          fontSize: 11,
-          formatter: (v: number) => `${v.toFixed(1)}%`,
-        },
-        splitLine: { lineStyle: { color: '#e8eaed', type: 'dashed' } },
-      },
-      series: [
-        {
-          name: '累计收益',
-          type: 'line',
-          data: returns,
-          smooth: true,
-          symbol: 'none',
-          lineStyle: { width: 2, color: returns[returns.length - 1] >= 0 ? '#34a853' : '#ea4335' },
-          areaStyle: {
-            color: new (echarts as any).graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: returns[returns.length - 1] >= 0 ? 'rgba(52, 168, 83, 0.15)' : 'rgba(234, 67, 53, 0.15)' },
-              { offset: 1, color: 'transparent' },
-            ]),
-          },
-        },
-      ],
-    };
-    mainChartInstance.current.setOption(option);
-
-    const handleResize = () => mainChartInstance.current?.resize();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [portfolioHistory]);
-
-  // 防御性数据访问：支持 camelCase 和 snake_case
+  const { statistics = {} } = result;
   const stats = statistics || {};
 
-  // 兼容两种命名格式
-  const totalReturn = (stats.totalReturn ?? stats.total_return ?? 0) as number;
-  const annualReturn = (stats.annualReturn ?? stats.annual_return ?? 0) as number;
-  const maxDrawdownPct = (stats.maxDrawdownPct ?? stats.max_drawdown_pct ?? stats.maxDrawdown ?? stats.max_drawdown ?? 0) as number;
-  const sharpeRatio = (stats.sharpeRatio ?? stats.sharpe_ratio ?? 0) as number;
-  const totalTrades = (stats.totalTrades ?? stats.total_trades ?? 0) as number;
-  const winRate = (stats.winRate ?? stats.win_rate ?? 0) as number;
+  // 兼容 snake_case 和 camelCase
+  const totalReturn = ((stats.total_return ?? stats.totalReturn ?? 0) * 100) as number;
+  const annualReturn = ((stats.annual_return ?? stats.annualReturn ?? 0) * 100) as number;
+  const maxDrawdownPct = ((stats.max_drawdown_pct ?? stats.maxDrawdownPct ?? stats.max_drawdown ?? 0) * 100) as number;
+  const sharpeRatio = (stats.sharpe_ratio ?? stats.sharpeRatio ?? 0) as number;
+  const totalTrades = (stats.total_trades ?? stats.totalTrades ?? 0) as number;
+  const winRate = ((stats.win_rate ?? stats.winRate ?? 0) * 100) as number;
+  const totalNetPnl = (stats.total_net_pnl ?? stats.totalNetPnl ?? 0) as number;
+  const maxDrawdown = (stats.max_drawdown ?? stats.maxDrawdown ?? 0) as number;
+  const startDate = (stats.start_date ?? stats.startDate ?? '-') as string;
+  const endDate = (stats.end_date ?? stats.endDate ?? '-') as string;
+  const totalDays = (stats.total_days ?? stats.totalDays ?? 0) as number;
 
   const isPositiveReturn = totalReturn >= 0;
   const isPositiveAnnual = annualReturn >= 0;
 
+  const [tradesSorted, setTradesSorted] = useState(result.trades || []);
+  const [sortKey, setSortKey] = useState<'datetime' | 'vtSymbol' | 'direction'>('datetime');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+
+  const handleSort = (key: 'datetime' | 'vtSymbol' | 'direction') => {
+    if (sortKey === key) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortOrder('desc');
+    }
+  };
+
+  useEffect(() => {
+    let sorted = [...(result.trades || [])];
+    sorted.sort((a: any, b: any) => {
+      let aVal = a[sortKey];
+      let bVal = b[sortKey];
+      if (aVal < bVal) return sortOrder === 'asc' ? -1 : 1;
+      if (aVal > bVal) return sortOrder === 'asc' ? 1 : -1;
+      return 0;
+    });
+    setTradesSorted(sorted);
+  }, [sortKey, sortOrder, result.trades]);
+
   return (
-    <div className="dashboard">
-      {/* 核心指标区 - 紧凑布局 */}
-      <div className="dashboard-hero">
-        <div className="hero-main">
-          <div className="hero-title">回测结果</div>
-          <div className={`hero-return ${isPositiveReturn ? 'positive' : 'negative'}`}>
-            {(totalReturn * 100).toFixed(2)}%
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+      {/* 顶部：关键指标 */}
+      <div style={{ padding: 24, borderBottom: '1px solid #e2e8f0', backgroundColor: '#f8f9fa' }}>
+        <div style={{ marginBottom: 20, display: 'grid', gridTemplateColumns: '1fr auto', gap: 20, alignItems: 'start' }}>
+          <div>
+            <div style={{ fontSize: 14, color: '#64748b', marginBottom: 8 }}>策略收益</div>
+            <div style={{ fontSize: 36, fontWeight: 'bold', color: isPositiveReturn ? '#22c55e' : '#ef4444' }}>
+              {totalReturn.toFixed(2)}%
+            </div>
+            <div style={{ fontSize: 12, color: '#64748b', marginTop: 8 }}>
+              {String(startDate).slice(0, 10)} 至 {String(endDate).slice(0, 10)} ({totalDays} 天)
+            </div>
           </div>
-          <div className="hero-subtitle">总收益率</div>
+          <div style={{ textAlign: 'right', fontSize: 12, color: '#64748b' }}>
+            <div>总盈亏: <span style={{ color: totalNetPnl >= 0 ? '#22c55e' : '#ef4444', fontWeight: 'bold' }}>¥{totalNetPnl.toFixed(2)}</span></div>
+            <div style={{ marginTop: 4 }}>交易次数: <span style={{ fontWeight: 'bold' }}>{totalTrades}</span></div>
+          </div>
         </div>
-        <div className="hero-stats">
-          <StatCard
-            label="年化收益"
-            value={(annualReturn * 100).toFixed(2)}
-            suffix="%"
-            type={isPositiveAnnual ? 'positive' : 'negative'}
-          />
-          <StatCard
-            label="最大回撤"
-            value={(maxDrawdownPct * 100).toFixed(2)}
-            suffix="%"
-            type="negative"
-          />
-          <StatCard
-            label="夏普比率"
-            value={sharpeRatio.toFixed(2)}
-            type={sharpeRatio >= 0 ? 'positive' : 'negative'}
-          />
-          <StatCard label="交易次数" value={totalTrades} />
-          <StatCard
-            label="胜率"
-            value={winRate ? (winRate * 100).toFixed(1) : '0.0'}
-            suffix="%"
-          />
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12 }}>
+          <StatCard label="年化收益" value={annualReturn.toFixed(2)} suffix="%" type={isPositiveAnnual ? 'positive' : 'negative'} />
+          <StatCard label="最大回撤" value={maxDrawdownPct.toFixed(2)} suffix="%" type="negative" />
+          <StatCard label="夏普比率" value={sharpeRatio.toFixed(2)} type={sharpeRatio >= 0 ? 'positive' : 'negative'} />
+          <StatCard label="胜率" value={winRate.toFixed(1)} suffix="%" type="neutral" />
         </div>
       </div>
 
-      {/* 图表区 - 双列布局 */}
-      <div className="dashboard-charts">
-        <div className="chart-panel main-chart">
-          <div className="chart-header">
-            <h3>收益曲线</h3>
+      {/* 中部：图表区域 */}
+      {result && (
+        <div style={{ flex: 1, padding: 24, overflowY: 'auto', borderBottom: '1px solid #e2e8f0' }}>
+          <h3 style={{ margin: '0 0 16px 0', fontSize: 14, fontWeight: 'bold', color: '#1e293b' }}>回测结果图表</h3>
+          <div style={{ width: '100%', height: 450, backgroundColor: 'white', borderRadius: 8, border: '1px solid #e2e8f0', overflow: 'hidden' }}>
+            <ChartViewer chartJson={result} />
           </div>
-          <div ref={mainChartRef} className="chart-body" />
-        </div>
-
-        {payoff && (
-          <div className="chart-panel">
-            <div className="chart-header">
-              <h3>到期盈亏图</h3>
-            </div>
-            <div className="chart-body">
-              <PayoffChart data={payoff} compact />
-            </div>
-          </div>
-        )}
-
-        <div className="chart-panel">
-          <div className="chart-header">
-            <h3>希腊值变化</h3>
-          </div>
-          <div className="chart-body">
-            <GreeksChart history={portfolioHistory} compact />
-          </div>
-        </div>
-      </div>
-
-      {/* 交易记录 - 可折叠 */}
-      {trades && trades.length > 0 && (
-        <div className="dashboard-trades">
-          <details open>
-            <summary>
-              <span>交易记录</span>
-              <span className="trades-count">{trades.length} 笔</span>
-            </summary>
-            <div className="trades-table-wrap">
-              <table className="trades-table">
-                <thead>
-                  <tr>
-                    <th>日期</th>
-                    <th>合约</th>
-                    <th>方向</th>
-                    <th>开平</th>
-                    <th>价格</th>
-                    <th>数量</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {trades.slice(0, 50).map((t: any, idx: number) => (
-                    <tr key={idx}>
-                      <td>{t.datetime?.slice(0, 10)}</td>
-                      <td className="symbol">{t.vtSymbol ?? t.vt_symbol}</td>
-                      <td>
-                        <span className={`tag ${(t.direction === 'LONG' || t.direction === '多') ? 'long' : 'short'}`}>
-                          {(t.direction === 'LONG' || t.direction === '多') ? '买入' : '卖出'}
-                        </span>
-                      </td>
-                      <td>{(t.offset === 'OPEN' || t.offset === '开') ? '开仓' : '平仓'}</td>
-                      <td>¥{(t.price ?? 0).toFixed(4)}</td>
-                      <td>{t.volume ?? 0}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {trades.length > 50 && (
-                <div className="trades-more">还有 {trades.length - 50} 笔交易...</div>
-              )}
-            </div>
-          </details>
         </div>
       )}
+
+      {/* 下部：交易记录表 */}
+      <div style={{ flex: 1, padding: 24, overflowY: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 'bold', color: '#1e293b' }}>交易记录 ({tradesSorted.length} 笔)</h3>
+        </div>
+
+        {tradesSorted.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 24, color: '#64748b', fontSize: 12 }}>暂无交易记录</div>
+        ) : (
+          <div style={{ overflowX: 'auto', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+            <table
+              style={{
+                width: '100%',
+                borderCollapse: 'collapse',
+                fontSize: 12,
+                backgroundColor: 'white',
+              }}
+            >
+              <thead>
+                <tr style={{ backgroundColor: '#f8f9fa', borderBottom: '1px solid #e2e8f0' }}>
+                  <th
+                    style={{
+                      padding: 12,
+                      textAlign: 'left',
+                      fontWeight: 'bold',
+                      color: '#64748b',
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                    }}
+                    onClick={() => handleSort('datetime')}
+                  >
+                    交易日期 {sortKey === 'datetime' && (sortOrder === 'asc' ? '↑' : '↓')}
+                  </th>
+                  <th
+                    style={{
+                      padding: 12,
+                      textAlign: 'left',
+                      fontWeight: 'bold',
+                      color: '#64748b',
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                    }}
+                    onClick={() => handleSort('vtSymbol')}
+                  >
+                    合约 {sortKey === 'vtSymbol' && (sortOrder === 'asc' ? '↑' : '↓')}
+                  </th>
+                  <th style={{ padding: 12, textAlign: 'left', fontWeight: 'bold', color: '#64748b' }}>方向</th>
+                  <th style={{ padding: 12, textAlign: 'right', fontWeight: 'bold', color: '#64748b' }}>价格</th>
+                  <th style={{ padding: 12, textAlign: 'right', fontWeight: 'bold', color: '#64748b' }}>数量</th>
+                  <th style={{ padding: 12, textAlign: 'right', fontWeight: 'bold', color: '#64748b' }}>开平</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tradesSorted.slice(0, 50).map((trade: any, idx: number) => (
+                  <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                    <td style={{ padding: 12, color: '#1e293b' }}>{trade.datetime?.slice(0, 10) || '-'}</td>
+                    <td style={{ padding: 12, color: '#1e293b', fontFamily: 'monospace', fontWeight: 500 }}>
+                      {trade.vtSymbol || trade.vt_symbol || '-'}
+                    </td>
+                    <td style={{ padding: 12 }}>
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          padding: '4px 8px',
+                          borderRadius: 4,
+                          fontSize: 11,
+                          fontWeight: 'bold',
+                          backgroundColor: trade.direction === 'LONG' || trade.direction === '多' ? '#dcfce7' : '#fee2e2',
+                          color: trade.direction === 'LONG' || trade.direction === '多' ? '#22c55e' : '#ef4444',
+                        }}
+                      >
+                        {trade.direction === 'LONG' || trade.direction === '多' ? '买' : '卖'}
+                      </span>
+                    </td>
+                    <td style={{ padding: 12, textAlign: 'right', color: '#1e293b' }}>¥{(trade.price ?? 0).toFixed(4)}</td>
+                    <td style={{ padding: 12, textAlign: 'right', color: '#1e293b' }}>{trade.volume ?? 0}</td>
+                    <td style={{ padding: 12, textAlign: 'right', color: '#64748b', fontSize: 11 }}>
+                      {trade.offset === 'OPEN' || trade.offset === '开' ? '开仓' : '平仓'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {tradesSorted.length > 50 && (
+              <div style={{ padding: 12, textAlign: 'center', color: '#64748b', fontSize: 12 }}>
+                还有 {tradesSorted.length - 50} 笔交易未显示
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
+}
+
+function ChartViewer({ chartJson }: { chartJson: BacktestResult }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!ref.current || !chartJson) return;
+
+    try {
+      // 使用 Plotly.js 渲染
+      if (typeof window !== 'undefined' && (window as any).Plotly) {
+        const Plotly = (window as any).Plotly;
+
+        // 解析后端返回的 Plotly JSON
+        if (chartJson && typeof chartJson === 'object') {
+          // 简单的演示图表：资产净值曲线
+          const portfolioHistory = (chartJson as any).portfolioHistory || [];
+
+          if (portfolioHistory.length > 0) {
+            const dates = portfolioHistory.map((p: any) => p.datetime?.slice(0, 10));
+            const balances = portfolioHistory.map((p: any) => (p.cash ?? 0) + (p.totalMarketValue ?? 0));
+
+            const trace = {
+              x: dates,
+              y: balances,
+              type: 'scatter',
+              mode: 'lines',
+              name: '资产净值',
+              line: { color: '#3b82f6', width: 2 },
+              fill: 'tozeroy',
+              fillcolor: 'rgba(59, 130, 246, 0.1)',
+            };
+
+            const layout = {
+              title: '',
+              xaxis: { title: '日期' },
+              yaxis: { title: '资产净值' },
+              hovermode: 'x unified',
+              plot_bgcolor: '#ffffff',
+              paper_bgcolor: '#ffffff',
+              font: { size: 12, color: '#64748b' },
+              margin: { l: 60, r: 20, t: 20, b: 40 },
+            };
+
+            Plotly.newPlot(ref.current, [trace], layout, { responsive: true, displayModeBar: false });
+          }
+        }
+      } else {
+        // Fallback: 使用简单的Canvas绘制
+        console.warn('Plotly.js not loaded, using fallback chart');
+      }
+    } catch (error) {
+      console.error('Chart render error:', error);
+    }
+  }, [chartJson]);
+
+  return <div ref={ref} style={{ width: '100%', height: '100%' }} />;
 }

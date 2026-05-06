@@ -20,3 +20,21 @@ server.log
 # Project specific
 data_storage/
 nu_
+
+# Large data files (GitHub 100MB limit)
+*.pkl
+*.csv
+!requirements.txt
+
+# Database
+*.db
+.ccquant/
+
+# Build outputs
+ccquant-web/dist/
+
+# Model outputs (keep structure but not large files)
+strategy/data/output/
+IV_Predict/data/output/
+IV_Predict/data/raw/
+IV_Predict/data/enhanced_dataset_v2.pkl

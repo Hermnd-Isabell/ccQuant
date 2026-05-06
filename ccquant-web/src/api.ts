@@ -269,6 +269,11 @@ export async function runBacktest(payload: Record<string, unknown>) {
   return data;
 }
 
+export async function runOptimization(payload: Record<string, unknown>) {
+  const { data } = await api.post('/api/backtest/optimize', payload);
+  return data;
+}
+
 export async function getBacktestHistory(limit = 50) {
   const { data } = await api.get('/api/backtest/history', { params: { limit } });
   return data;

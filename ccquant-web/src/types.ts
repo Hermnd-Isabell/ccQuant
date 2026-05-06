@@ -294,10 +294,15 @@ export interface BacktestConfig {
 }
 
 export interface BacktestResult {
-  statistics: Statistics;
+  statistics: Record<string, any>;
   portfolioHistory: PortfolioSnapshot[];
   trades: TradeRecord[];
+  orders: OrderRecord[];
+  daily_df: DailyResultRow[];
+  daily_results: DailyResultRow[];
+  logs: string[];
   payoff?: PayoffData;
+  chart_json?: string;
 }
 
 export interface Statistics {
@@ -356,4 +361,89 @@ export interface ParameterDef {
   min?: number;
   max?: number;
   step?: number;
+}
+
+// ========== 回测请求和结果 ==========
+
+export interface DailyResultRow {
+  date: string;
+  balance: number;
+  drawdown: number;
+  ddpercent: number;
+  net_pnl: number;
+  trade_count: number;
+  turnover: number;
+  commission: number;
+  slippage: number;
+  trading_pnl: number;
+  holding_pnl: number;
+  total_pnl: number;
+  return: number;
+  highlevel: number;
+}
+
+export interface OrderRecord {
+  datetime: string;
+  vt_symbol: string;
+  direction: string;
+  offset: string;
+  price: number;
+  volume: number;
+  traded: number;
+  status: string;
+  orderid: string;
+}
+
+export interface BacktestRequest {
+  strategy_name: string;
+  vt_symbols?: string[];
+  vt_symbol?: string;
+  start_date: string;
+  end_date: string;
+  initial_capital: number;
+  rate: number;
+  slippage: number;
+  size?: number;
+  pricetick?: number;
+  params?: Record<string, any>;
+  underlying?: string;
+  interval?: string;
+}
+
+export interface OptimizationRequest {
+  strategy_name: string;
+  vt_symbols: string[];
+  start_date: string;
+  end_date: string;
+  initial_capital: number;
+  rate: number;
+  slippage: number;
+  size?: number;
+  pricetick?: number;
+  params?: Record<string, any>;
+  underlying?: string;
+  optimization_params: Record<string, { start: number; end: number; step: number }>;
+  method?: 'brute_force' | 'genetic';
+}
+
+export interface StatisticEntry {
+  params: Record<string, any>;
+  total_return: number;
+  annual_return: number;
+  max_drawdown_pct: number;
+  sharpe_ratio: number;
+  total_trades: number;
+  win_rate: number;
+}
+
+export interface OptimizationResult {
+  success: boolean;
+  results: OptimizationResultItem[];
+  message?: string;
+}
+
+export interface OptimizationResultItem {
+  params: Record<string, any>;
+  target_value: number;
+  statistics: Record<string, any>;
 }
